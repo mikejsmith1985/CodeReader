@@ -363,6 +363,12 @@ IMPORTANT — question wording rules:
 - Make each question fully self-contained with its excerpt
 - At depth 1, codeExcerpt MUST be empty string ""
 
+SELF-VALIDATION — before finalising each question, ask yourself:
+1. "Could a learner read ONLY the question text + codeExcerpt and have enough information to choose the correct answer?" If no: expand the codeExcerpt to include the missing context, or rewrite the question so it is self-contained.
+2. "Does answering this question require knowing something that isn't in the excerpt or the explanation?" If yes: rewrite it.
+3. "Is the correct answer a raw literal value from the code?" If yes: discard and write a conceptual question instead.
+Only include a question if it passes all three checks.
+
 Return ONLY a valid JSON array, no markdown, no text outside the JSON:
 [{"question": "...", "codeExcerpt": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": 0, "hint": "..."}]
 
