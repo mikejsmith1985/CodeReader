@@ -1,7 +1,7 @@
-FROM node:20-alpine
+FROM node:20-slim
 
-# git is needed to clone learning repos; python3/make/g++ for better-sqlite3 native build
-RUN apk add --no-cache git python3 make g++
+# git is needed to clone learning repos at runtime
+RUN apt-get update && apt-get install -y git python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
