@@ -1,0 +1,37 @@
+# fly.toml — Fly.io deployment config for CodeReader
+# Docs: https://fly.io/docs/reference/configuration/
+
+app = "codereader"
+primary_region = "iad"
+
+[build]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # min_machines_running = 1 keeps the app always awake (better for phone use).
+  # This is fine on the free tier since you only have one machine.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+# Persistent 1 GB volume — stores SQLite DB and cloned repos.
+# Created automatically on first deploy: fly volumes create codereader_data --size 1
+[[mounts]]
+  source = "codereader_data"
+  destination = "/data"
+
+[env]
+  PORT = "3000"
+  # SQLite database lives on the persistent volume
+  DATA_DIR = "/data"
+  # Cloned repos also live on the persistent volume (survives restarts)
+  PROJECTS_DIR = "/data/projects"
+
+# Set secrets via: fly secrets set CODEREADER_GITHUB_TOKEN=xxx
+# Optionally: fly secrets set GITHUB_CLONE_TOKEN=xxx  (only needed for private repos)

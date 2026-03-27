@@ -1,0 +1,82 @@
+[
+  {
+    "id": "word-puzzle-solver",
+    "url": "https://github.com/mikejsmith1985/word-puzzle-solver",
+    "icon": "🔤",
+    "description": "Word puzzle solver with constraints",
+    "complexity": "simple",
+    "startFile": "src/App.tsx",
+    "startWhy": "This is the main screen — where you type letters and see the matching words appear",
+    "order": 0
+  },
+  {
+    "id": "mbl2pc",
+    "url": "https://github.com/mikejsmith1985/mbl2pc",
+    "icon": "📱",
+    "description": "Mobile-to-PC cloud chat app",
+    "complexity": "simple",
+    "startFile": "main.py",
+    "startWhy": "This is the brain of the app — it handles all the requests when you send a message",
+    "order": 1
+  },
+  {
+    "id": "sync",
+    "url": "https://github.com/mikejsmith1985/sync",
+    "icon": "🚗",
+    "description": "Ford SYNC 3 CarPlay overlay mod",
+    "complexity": "medium",
+    "startFile": "app/overlay.html",
+    "startWhy": "This is what actually shows on the car screen — the floating temperature and seat controls",
+    "order": 2
+  },
+  {
+    "id": "ToolBox",
+    "url": "https://github.com/mikejsmith1985/ToolBox",
+    "icon": "🧰",
+    "description": "Multi-tool web utility suite",
+    "complexity": "medium",
+    "startFile": "toolbox.html",
+    "startWhy": "This single file IS the entire app — all the tools live inside it",
+    "order": 3
+  },
+  {
+    "id": "jira-html-parser",
+    "url": "https://github.com/mikejsmith1985/jira-html-parser",
+    "icon": "📋",
+    "description": "Pre-filled issue link generator",
+    "complexity": "medium",
+    "startFile": "link-generator/index.html",
+    "startWhy": "This is the main page — everything the app does starts from this one file",
+    "order": 4
+  },
+  {
+    "id": "migrationtool",
+    "url": "https://github.com/mikejsmith1985/migrationtool",
+    "icon": "🔀",
+    "description": "Jira migration CLI + bookmarklet",
+    "complexity": "medium",
+    "startFile": "HealthSpring Jira Importer/index.js",
+    "startWhy": "This is the main script that kicks everything off when you run the tool",
+    "order": 5
+  },
+  {
+    "id": "forge-terminal",
+    "url": "https://github.com/mikejsmith1985/forge-terminal",
+    "icon": "🖥️",
+    "description": "AI-assisted PTY terminal with command cards",
+    "complexity": "complex",
+    "startFile": "frontend/src/App.jsx",
+    "startWhy": "This is the main screen of the app — it controls what you see when you open Forge Terminal",
+    "order": 6
+  },
+  {
+    "id": "jira-automation",
+    "url": "https://github.com/mikejsmith1985/jira-automation",
+    "icon": "🔄",
+    "description": "GitHub-Jira sync with insights engine",
+    "complexity": "complex",
+    "startFile": "templates/index.html",
+    "startWhy": "This is the main page you see when you open the app — it sets up the whole interface",
+    "order": 7
+  }
+]
