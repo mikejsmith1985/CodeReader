@@ -12,16 +12,21 @@ import { DEPTH_NAMES } from '../utils/xp'
 export default function CodeExplorer({ onProgress }) {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const filePath = searchParams.get('file')
-  const projectId = searchParams.get('project')
+
+  // Support new ?owner=&repo=&path= params
+  const owner = searchParams.get('owner')
+  const repo = searchParams.get('repo')
+  const pathParam = searchParams.get('path')
   const initialDepth = parseInt(searchParams.get('depth')) || 1
 
+  // Virtual file path used as a key everywhere: "owner/repo/filepath"
+  const filePath = owner && repo && pathParam ? `${owner}/${repo}/${pathParam}` : null
+
   const [fileData, setFileData] = useState(null)
-  const [projectInfo, setProjectInfo] = useState(null)
   const [depth, setDepth] = useState(initialDepth)
   const [blockIndex, setBlockIndex] = useState(0)
   const [completedDepths, setCompletedDepths] = useState([])
-  const [readKeys, setReadKeys] = useState(new Set()) // tracks "filePath::depth::block" already read
+  const [readKeys, setReadKeys] = useState(new Set())
   const [bossUnlocked, setBossUnlocked] = useState(false)
   const [loading, setLoading] = useState(true)
   const [showCode, setShowCode] = useState(false)
@@ -30,34 +35,26 @@ export default function CodeExplorer({ onProgress }) {
   const ai = useAI()
   const progress = useProgress()
 
-  // Load file data and project info
+  // Load file data
   useEffect(() => {
-    if (!filePath) return
+    if (!owner || !repo || !pathParam) return
     setLoading(true)
     setExplained(false)
     setShowCode(false)
     setBossUnlocked(false)
 
-    const promises = [
-      fetch(`/api/files?path=${encodeURIComponent(filePath)}`).then(r => r.json()),
-    ]
-    if (projectId) {
-      promises.push(fetch('/api/projects').then(r => r.json()))
-    }
-
-    Promise.all(promises).then(([fileResp, projResp]) => {
-      setFileData(fileResp)
-      if (projResp) {
-        const proj = projResp.projects?.find(p => p.id === projectId)
-        setProjectInfo(proj)
-      }
-      setBlockIndex(0)
-      setLoading(false)
-    }).catch(err => {
-      console.error(err)
-      setLoading(false)
-    })
-  }, [filePath, projectId])
+    fetch(`/api/files?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(pathParam)}`)
+      .then(r => r.json())
+      .then(data => {
+        setFileData(data)
+        setBlockIndex(0)
+        setLoading(false)
+      })
+      .catch(err => {
+        console.error(err)
+        setLoading(false)
+      })
+  }, [owner, repo, pathParam])
 
   // Auto-explain when depth, block, or file changes
   const triggerExplain = useCallback(async () => {
@@ -77,11 +74,11 @@ export default function CodeExplorer({ onProgress }) {
     const result = await ai.explain(
       filePath, code, depth,
       depth <= 2 ? -1 : blockIndex,
-      projectInfo?.name || projectId || '',
-      projectInfo?.description || ''
+      `${owner}/${repo}`,
+      ''
     )
     if (result) setExplained(true)
-  }, [fileData, loading, depth, blockIndex, filePath, projectId, projectInfo])
+  }, [fileData, loading, depth, blockIndex, filePath, owner, repo])
 
   useEffect(() => {
     triggerExplain()
@@ -90,7 +87,7 @@ export default function CodeExplorer({ onProgress }) {
   const handleGotIt = async () => {
     const bi = depth <= 2 ? -1 : blockIndex
     const key = `${filePath}::${depth}::${bi}`
-    if (readKeys.has(key)) return  // already claimed
+    if (readKeys.has(key)) return
     const result = await progress.completeExplanation(filePath, depth, bi)
     if (result) onProgress?.(result)
     setReadKeys(prev => new Set([...prev, key]))
@@ -101,7 +98,7 @@ export default function CodeExplorer({ onProgress }) {
 
   const handleQuizMe = () => {
     const code = depth <= 2 ? fileData.content?.slice(0, 2000) : fileData.blocks?.[blockIndex]?.code
-    navigate(`/quiz?file=${encodeURIComponent(filePath)}&project=${projectId}&depth=${depth}&block=${blockIndex}&code=${encodeURIComponent(code?.slice(0, 2000) || '')}`)
+    navigate(`/quiz?owner=${owner}&repo=${repo}&path=${encodeURIComponent(pathParam)}&depth=${depth}&block=${blockIndex}&code=${encodeURIComponent(code?.slice(0, 2000) || '')}`)
   }
 
   const handleGoDeeper = () => {
@@ -143,7 +140,7 @@ export default function CodeExplorer({ onProgress }) {
     )
   }
 
-  const fileName = filePath.split(/[/\\]/).pop()
+  const fileName = pathParam?.split('/').pop() || filePath.split('/').pop()
   const currentBlock = fileData?.blocks?.[blockIndex]
   const totalBlocks = fileData?.blocks?.length || 0
   const depthInfo = DEPTH_NAMES[depth]
@@ -151,9 +148,7 @@ export default function CodeExplorer({ onProgress }) {
   const currentReadKey = `${filePath}::${depth}::${depth <= 2 ? -1 : blockIndex}`
   const alreadyRead = readKeys.has(currentReadKey)
 
-  // At depth 1-2, code is secondary; at depth 3-4, code is shown alongside
   const isOverviewMode = depth <= 2
-  // Small code preview for overview mode (first 15 lines)
   const codePreview = fileData?.content?.split('\n').slice(0, 15).join('\n') || ''
 
   return (
@@ -166,13 +161,15 @@ export default function CodeExplorer({ onProgress }) {
         padding: '16px 20px',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          {projectInfo && <span style={{ fontSize: 18 }}>{projectInfo.icon}</span>}
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>{fileName}</h2>
           <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             {fileData?.lines} lines · {fileData?.language}
           </span>
         </div>
-        <div style={{ fontSize: 13, color: depthInfo?.color || 'var(--text-secondary)' }}>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          {owner}/{repo}
+        </div>
+        <div style={{ fontSize: 13, color: depthInfo?.color || 'var(--text-secondary)', marginTop: 4 }}>
           {depthInfo?.icon} {depthInfo?.name}: {depthInfo?.description}
         </div>
         {showBlocks && totalBlocks > 1 && (
@@ -185,10 +182,9 @@ export default function CodeExplorer({ onProgress }) {
       {/* Depth Selector */}
       <DepthSelector current={depth} onChange={(d) => { setDepth(d); setShowCode(false) }} completedDepths={completedDepths} />
 
-      {/* === OVERVIEW MODE (Depth 1-2): Explanation FIRST, code optional === */}
+      {/* === OVERVIEW MODE (Depth 1-2) === */}
       {isOverviewMode && (
         <>
-          {/* Explanation - THE MAIN CONTENT */}
           <Explanation
             text={ai.explanation}
             loading={ai.loading}
@@ -196,7 +192,6 @@ export default function CodeExplorer({ onProgress }) {
             depth={depth}
           />
 
-          {/* Action Buttons */}
           {ai.explanation && !ai.loading && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
               <button
@@ -211,7 +206,6 @@ export default function CodeExplorer({ onProgress }) {
                 className="btn-primary"
                 onClick={handleQuizMe}
                 disabled={!bossUnlocked}
-                title={bossUnlocked ? 'Take the Boss Fight quiz!' : 'Complete the challenges below to unlock'}
                 style={{
                   fontSize: 15, padding: '12px 24px',
                   background: bossUnlocked ? '#dc2626' : 'var(--border)',
@@ -229,7 +223,6 @@ export default function CodeExplorer({ onProgress }) {
             </div>
           )}
 
-          {/* Mini-Goals (Minion Fights) */}
           {ai.explanation && !ai.loading && (
             <MiniGoals
               filePath={filePath}
@@ -242,27 +235,13 @@ export default function CodeExplorer({ onProgress }) {
             />
           )}
 
-          {/* Collapsible Code Preview */}
-          <div style={{
-            background: 'var(--surface)',
-            borderRadius: 'var(--radius)',
-            border: '1px solid var(--border)',
-            overflow: 'hidden',
-          }}>
+          <div style={{ background: 'var(--surface)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', overflow: 'hidden' }}>
             <button
               onClick={() => setShowCode(!showCode)}
               style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '12px 16px',
-                background: 'var(--surface)',
-                color: 'var(--text-secondary)',
-                fontSize: 13,
-                border: 'none',
-                borderRadius: 0,
-                cursor: 'pointer',
+                width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '12px 16px', background: 'var(--surface)', color: 'var(--text-secondary)',
+                fontSize: 13, border: 'none', borderRadius: 0, cursor: 'pointer',
               }}
             >
               <span>👀 {showCode ? 'Hide' : 'Peek at'} the actual code</span>
@@ -270,50 +249,18 @@ export default function CodeExplorer({ onProgress }) {
             </button>
             {showCode && (
               <div style={{ borderTop: '1px solid var(--border)' }}>
-                <CodeBlock
-                  code={fileData?.content || ''}
-                  language={fileData?.language || 'javascript'}
-                  startLine={0}
-                />
-                <div style={{
-                  padding: '10px 16px',
-                  borderTop: '1px solid var(--border)',
-                  fontSize: 12,
-                  color: 'var(--text-secondary)',
-                  textAlign: 'center',
-                  background: 'var(--surface)',
-                }}>
+                <CodeBlock code={fileData?.content || ''} language={fileData?.language || 'javascript'} startLine={0} />
+                <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', fontSize: 12, color: 'var(--text-secondary)', textAlign: 'center', background: 'var(--surface)' }}>
                   ─── End of file · {fileData?.lines} lines total ───
                 </div>
               </div>
             )}
             {!showCode && (
-              <div style={{
-                borderTop: '1px solid var(--border)',
-                padding: '0',
-                position: 'relative',
-              }}>
-                <CodeBlock
-                  code={codePreview}
-                  language={fileData?.language || 'javascript'}
-                  startLine={0}
-                />
-                <div style={{
-                  position: 'absolute',
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  height: 60,
-                  background: 'linear-gradient(transparent, var(--surface))',
-                  display: 'flex',
-                  alignItems: 'flex-end',
-                  justifyContent: 'center',
-                  paddingBottom: 8,
-                }}>
+              <div style={{ borderTop: '1px solid var(--border)', padding: 0, position: 'relative' }}>
+                <CodeBlock code={codePreview} language={fileData?.language || 'javascript'} startLine={0} />
+                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 60, background: 'linear-gradient(transparent, var(--surface))', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', paddingBottom: 8 }}>
                   <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {(fileData?.lines || 0) > 15
-                      ? `... ${fileData.lines - 15} more lines — click to see all`
-                      : `${fileData?.lines} lines total`}
+                    {(fileData?.lines || 0) > 15 ? `... ${fileData.lines - 15} more lines — click to see all` : `${fileData?.lines} lines total`}
                   </span>
                 </div>
               </div>
@@ -322,25 +269,13 @@ export default function CodeExplorer({ onProgress }) {
         </>
       )}
 
-      {/* === DETAIL MODE (Depth 3-4): Code block + Explanation side by side === */}
+      {/* === DETAIL MODE (Depth 3-4) === */}
       {!isOverviewMode && (
         <>
-          {/* Code Block */}
-          <CodeBlock
-            code={currentBlock?.code || ''}
-            language={fileData?.language || 'javascript'}
-            startLine={currentBlock?.startLine || 0}
-          />
+          <CodeBlock code={currentBlock?.code || ''} language={fileData?.language || 'javascript'} startLine={currentBlock?.startLine || 0} />
 
-          {/* Explanation */}
-          <Explanation
-            text={ai.explanation}
-            loading={ai.loading}
-            noAI={false}
-            depth={depth}
-          />
+          <Explanation text={ai.explanation} loading={ai.loading} noAI={false} depth={depth} />
 
-          {/* Action Buttons */}
           {ai.explanation && !ai.loading && (
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
               <button
@@ -355,7 +290,6 @@ export default function CodeExplorer({ onProgress }) {
                 className="btn-primary"
                 onClick={handleQuizMe}
                 disabled={!bossUnlocked}
-                title={bossUnlocked ? 'Take the Boss Fight quiz!' : 'Complete the challenges below to unlock'}
                 style={{
                   fontSize: 15, padding: '12px 24px',
                   background: bossUnlocked ? '#dc2626' : 'var(--border)',
@@ -375,7 +309,6 @@ export default function CodeExplorer({ onProgress }) {
             </div>
           )}
 
-          {/* Mini-Goals (Minion Fights) */}
           {ai.explanation && !ai.loading && (
             <MiniGoals
               filePath={filePath}
@@ -388,20 +321,9 @@ export default function CodeExplorer({ onProgress }) {
             />
           )}
 
-          {/* Block Navigation */}
           {totalBlocks > 1 && (
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '12px 0',
-            }}>
-              <button
-                className="btn-secondary"
-                onClick={handlePrevBlock}
-                disabled={blockIndex === 0}
-                style={{ opacity: blockIndex === 0 ? 0.4 : 1 }}
-              >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0' }}>
+              <button className="btn-secondary" onClick={handlePrevBlock} disabled={blockIndex === 0} style={{ opacity: blockIndex === 0 ? 0.4 : 1 }}>
                 ◀ Previous Block
               </button>
               <div style={{ display: 'flex', gap: 4 }}>
@@ -409,28 +331,12 @@ export default function CodeExplorer({ onProgress }) {
                   <div
                     key={i}
                     onClick={() => { setBlockIndex(i); setShowCode(false) }}
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      background: i === blockIndex ? 'var(--accent)' : 'var(--border)',
-                      cursor: 'pointer',
-                      transition: 'background 0.2s',
-                    }}
+                    style={{ width: 8, height: 8, borderRadius: '50%', background: i === blockIndex ? 'var(--accent)' : 'var(--border)', cursor: 'pointer', transition: 'background 0.2s' }}
                   />
                 ))}
-                {totalBlocks > 30 && (
-                  <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 4 }}>
-                    +{totalBlocks - 30} more
-                  </span>
-                )}
+                {totalBlocks > 30 && <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 4 }}>+{totalBlocks - 30} more</span>}
               </div>
-              <button
-                className="btn-secondary"
-                onClick={handleNextBlock}
-                disabled={blockIndex === totalBlocks - 1}
-                style={{ opacity: blockIndex === totalBlocks - 1 ? 0.4 : 1 }}
-              >
+              <button className="btn-secondary" onClick={handleNextBlock} disabled={blockIndex === totalBlocks - 1} style={{ opacity: blockIndex === totalBlocks - 1 ? 0.4 : 1 }}>
                 Next Block ▶
               </button>
             </div>
@@ -438,12 +344,11 @@ export default function CodeExplorer({ onProgress }) {
         </>
       )}
 
-      {/* Chat with AI — always visible once file is loaded */}
       <ChatBox
         code={isOverviewMode ? fileData?.content : currentBlock?.code}
         filename={fileName}
-        project={projectInfo?.name || projectId || ''}
-        description={projectInfo?.description || ''}
+        project={`${owner}/${repo}`}
+        description=""
       />
     </div>
   )

@@ -1,17 +1,24 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import passport from 'passport';
+import { Strategy as GitHubStrategy } from 'passport-github2';
+import session from 'express-session';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
-import { scanProjects, getFileContent, parseCodeBlocks } from './scanner.js';
+import { parseCodeBlocks } from './scanner.js';
 import { getExplanation, generateQuiz, generateGoals, validateGoalAnswer, isAIConfigured, clearTokenCache, getToken } from './ai-client.js';
 import {
+  upsertUser, getUserById,
+  getUserRepos as dbGetUserRepos, addUserRepo, removeUserRepo,
   getProgress, addXP, markComplete, recordQuizScore,
   getAchievements, unlockAchievement, visitProject,
   getVisitedProjects, getCompletionStats, getCompletionsForProject,
   completeGoal, getCompletedGoals, getSetting, setSetting,
+  SQLiteStore,
 } from './db.js';
+import { getUserRepos, searchRepos, getRepoInfo, getRepoTree, getFileContent as ghGetFileContent } from './github-client.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,65 +27,176 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Cache scanned projects in memory
-let projectsCache = null;
+// --- Session + Passport setup ---
+app.use(session({
+  store: new SQLiteStore(),
+  secret: process.env.SESSION_SECRET || 'dev-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 },
+}));
+app.use(passport.initialize());
+app.use(passport.session());
 
-// --- API Routes ---
-
-// Get all projects
-app.get('/api/projects', async (req, res) => {
+passport.use(new GitHubStrategy({
+  clientID: process.env.GITHUB_CLIENT_ID,
+  clientSecret: process.env.GITHUB_CLIENT_SECRET,
+  callbackURL: process.env.GITHUB_CALLBACK_URL || 'https://codereader.fly.dev/auth/github/callback',
+  scope: ['user:email', 'repo'],
+}, async (accessToken, refreshToken, profile, done) => {
   try {
-    if (!projectsCache) {
-      projectsCache = await scanProjects();
-    }
-    // Return projects without full file trees (lighter payload)
-    const projects = projectsCache.map(p => ({
-      id: p.id,
-      name: p.name,
-      path: p.path,
-      language: p.language,
-      filesCount: p.filesCount,
-      linesCount: p.linesCount,
-      complexity: p.complexity,
-      description: p.description,
-      icon: p.icon,
-      order: p.order,
-      startFile: p.startFile || null,
-    }));
-    res.json({ projects });
+    const user = upsertUser(profile.id, profile.username, profile.photos?.[0]?.value, accessToken);
+    done(null, user);
+  } catch (err) { done(err); }
+}));
+
+passport.serializeUser((user, done) => done(null, user.id));
+passport.deserializeUser((id, done) => {
+  try { done(null, getUserById(id)); } catch (e) { done(e); }
+});
+
+function requireAuth(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
+  next();
+}
+
+function getAIToken(req) {
+  if (req.user) {
+    const userToken = getSetting(req.user.id, 'github_token');
+    if (userToken) return userToken;
+    if (req.user.access_token) return req.user.access_token;
+  }
+  return process.env.CODEREADER_GITHUB_TOKEN || null;
+}
+
+// --- Auth routes ---
+app.get('/auth/github', passport.authenticate('github'));
+app.get('/auth/github/callback',
+  passport.authenticate('github', { failureRedirect: '/?error=auth' }),
+  (req, res) => res.redirect('/')
+);
+app.post('/auth/logout', (req, res) => {
+  req.logout(() => res.json({ success: true }));
+});
+app.get('/api/me', (req, res) => {
+  if (!req.user) return res.json({ user: null });
+  res.json({ user: { id: req.user.id, username: req.user.username, avatarUrl: req.user.avatar_url } });
+});
+
+// --- Repo management endpoints ---
+
+app.get('/api/repos', requireAuth, async (req, res) => {
+  try {
+    const rows = dbGetUserRepos(req.user.id);
+    const enriched = await Promise.allSettled(
+      rows.map(async ({ owner, repo, added_at }) => {
+        try {
+          const info = await getRepoInfo(owner, repo, req.user.access_token);
+          return { ...info, added_at };
+        } catch {
+          return { owner, repo, added_at, description: '', language: '', stargazerCount: 0, isPrivate: false };
+        }
+      })
+    );
+    res.json({ repos: enriched.map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get file tree for a project
-app.get('/api/projects/:id/files', async (req, res) => {
+app.get('/api/repos/search', requireAuth, async (req, res) => {
   try {
-    if (!projectsCache) projectsCache = await scanProjects();
-    const project = projectsCache.find(p => p.id === req.params.id);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
-    
-    // Track visit
-    visitProject(project.id);
-    
-    // Get completions for this project
-    const completions = getCompletionsForProject(project.path);
-    
-    res.json({ files: project.fileTree, completions, startFile: project.startFile || null });
+    const q = req.query.q || '';
+    if (!q) {
+      const results = await getUserRepos(req.user.access_token);
+      return res.json({ results });
+    }
+    const results = await searchRepos(q, req.user.access_token);
+    res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/repos/add', requireAuth, async (req, res) => {
+  try {
+    const { owner, repo } = req.body;
+    if (!owner || !repo) return res.status(400).json({ error: 'owner and repo required' });
+    addUserRepo(req.user.id, owner, repo);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/repos/:owner/:repo', requireAuth, async (req, res) => {
+  try {
+    removeUserRepo(req.user.id, req.params.owner, req.params.repo);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/repos/:owner/:repo/files', requireAuth, async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const tree = await getRepoTree(owner, repo, req.user.access_token);
+    const completions = getCompletionsForProject(req.user.id, owner, repo);
+    visitProject(req.user.id, `${owner}/${repo}`);
+
+    // Auto-detect start file
+    let startFile = null;
+    const patterns = [
+      /src\/App\.(jsx|tsx|js|ts)$/i,
+      /src\/main\.(jsx|tsx|js|ts)$/i,
+      /src\/index\.(jsx|tsx|js|ts)$/i,
+      /app\.(py|js|ts|jsx|tsx)$/i,
+      /main\.(py|go|js|ts)$/i,
+      /index\.(html|js|ts)$/i,
+      /server\.(js|ts|py)$/i,
+    ];
+    function findStart(nodes) {
+      for (const n of nodes) {
+        if (n.type === 'file') {
+          for (const p of patterns) {
+            if (p.test(n.path)) return n;
+          }
+        }
+        if (n.children) { const f = findStart(n.children); if (f) return f; }
+      }
+      return null;
+    }
+    startFile = findStart(tree);
+    if (!startFile) {
+      // Fall back to largest code file
+      const allFiles = [];
+      function collect(nodes) {
+        for (const n of nodes) {
+          if (n.type === 'file' && ['javascript', 'typescript', 'python', 'go'].includes(n.language)) allFiles.push(n);
+          if (n.children) collect(n.children);
+        }
+      }
+      collect(tree);
+      allFiles.sort((a, b) => b.lines - a.lines);
+      startFile = allFiles[0] || null;
+    }
+
+    res.json({ files: tree, completions, startFile });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // Get file content
-app.get('/api/files', async (req, res) => {
+app.get('/api/files', requireAuth, async (req, res) => {
   try {
-    const filePath = req.query.path;
-    if (!filePath) return res.status(400).json({ error: 'path parameter required' });
-    
-    const file = await getFileContent(filePath);
+    const { owner, repo, path } = req.query;
+    if (!owner || !repo || !path) return res.status(400).json({ error: 'owner, repo, and path required' });
+
+    const file = await ghGetFileContent(owner, repo, path, req.user.access_token);
     const blocks = parseCodeBlocks(file.content, file.language);
-    
+
     res.json({ ...file, blocks });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -87,17 +205,16 @@ app.get('/api/files', async (req, res) => {
 
 // AI status check
 app.get('/api/ai-status', async (req, res) => {
-  const configured = isAIConfigured();
-  if (!configured) {
-    return res.json({ 
+  const token = getAIToken(req);
+  if (!token) {
+    return res.json({
       status: 'not_configured',
       message: 'No GitHub token found. Set CODEREADER_GITHUB_TOKEN in .env file.',
       setupUrl: 'https://github.com/settings/tokens',
     });
   }
-  // Quick test call
   try {
-    const testResult = await getExplanation('__test__', 'const x = 1;', 1, -1, 'test', 'test');
+    const testResult = await getExplanation('__test__', 'const x = 1;', 1, -1, 'test', 'test', token);
     if (testResult.noAI) {
       return res.json({
         status: 'token_invalid',
@@ -112,7 +229,7 @@ app.get('/api/ai-status', async (req, res) => {
 });
 
 // Setup wizard: test and save token
-app.post('/api/setup-token', async (req, res) => {
+app.post('/api/setup-token', requireAuth, async (req, res) => {
   const { token, action } = req.body;
   if (!token) return res.status(400).json({ success: false, message: 'Token is required' });
 
@@ -155,10 +272,7 @@ app.post('/api/setup-token', async (req, res) => {
 
   if (action === 'save') {
     try {
-      // Save to SQLite DB — survives server restarts, no Vite file-watcher race condition
-      setSetting('github_token', token.trim());
-      // Also inject into the live process so AI works immediately without restart
-      process.env.CODEREADER_GITHUB_TOKEN = token.trim();
+      setSetting(req.user.id, 'github_token', token.trim());
       clearTokenCache();
       return res.json({ success: true, message: 'Token saved!' });
     } catch (err) {
@@ -170,12 +284,12 @@ app.post('/api/setup-token', async (req, res) => {
 });
 
 // Chat with AI about the current file
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', requireAuth, async (req, res) => {
   try {
     const { question, code, filename, project, description, history } = req.body;
     if (!question) return res.status(400).json({ error: 'question required' });
 
-    const token = getToken();
+    const token = getAIToken(req);
     if (!token) {
       return res.json({
         answer: 'AI is not set up yet.',
@@ -200,7 +314,6 @@ Rules:
 - Keep answers concise (2-5 sentences) unless more detail is clearly needed.
 - If they ask about something not in the code, still try to help with a general explanation.`;
 
-    // Build message history
     const messages = [{ role: 'system', content: systemPrompt }];
     for (const msg of (history || [])) {
       messages.push({ role: 'user', content: msg.question });
@@ -231,14 +344,15 @@ Rules:
 });
 
 // Get AI explanation
-app.post('/api/explain', async (req, res) => {
+app.post('/api/explain', requireAuth, async (req, res) => {
   try {
     const { filePath, code, depth, blockIndex, project, description } = req.body;
     if (!filePath || !code || !depth) {
       return res.status(400).json({ error: 'filePath, code, and depth required' });
     }
-    
-    const result = await getExplanation(filePath, code, depth, blockIndex || -1, project || '', description || '');
+
+    const token = getAIToken(req);
+    const result = await getExplanation(filePath, code, depth, blockIndex || -1, project || '', description || '', token);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -246,26 +360,28 @@ app.post('/api/explain', async (req, res) => {
 });
 
 // Generate quiz
-app.post('/api/quiz', async (req, res) => {
+app.post('/api/quiz', requireAuth, async (req, res) => {
   try {
     const { filePath, code, explanation, depth, blockIndex } = req.body;
     if (!code) return res.status(400).json({ error: 'code required' });
-    
-    const result = await generateQuiz(filePath || '', code, explanation || '', depth || 3, blockIndex || -1);
+
+    const token = getAIToken(req);
+    const result = await generateQuiz(filePath || '', code, explanation || '', depth || 3, blockIndex || -1, token);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Generate mini-goals (minion fights) for a file
-app.post('/api/goals', async (req, res) => {
+// Generate mini-goals
+app.post('/api/goals', requireAuth, async (req, res) => {
   try {
     const { filePath, code, depth, filename, lineCount } = req.body;
     if (!code) return res.status(400).json({ error: 'code required' });
-    const goals = await generateGoals(filePath || '', code, depth || 1, filename || '', lineCount || 100);
-    const completed = getCompletedGoals(filePath || '', depth || 1);
-    // How many challenges must be cleared to unlock the Boss Fight
+
+    const token = getAIToken(req);
+    const goals = await generateGoals(filePath || '', code, depth || 1, filename || '', lineCount || 100, token);
+    const completed = getCompletedGoals(req.user.id, filePath || '', depth || 1);
     const required = Math.max(2, Math.round(goals.length * 0.65));
     res.json({ goals, completed, required });
   } catch (err) {
@@ -273,32 +389,34 @@ app.post('/api/goals', async (req, res) => {
   }
 });
 
-// Complete a mini-goal (minion fight) — awards 5 XP
-app.post('/api/goals/complete', (req, res) => {
+// Complete a mini-goal
+app.post('/api/goals/complete', requireAuth, (req, res) => {
   try {
     const { filePath, depth, goalIndex } = req.body;
-    completeGoal(filePath, depth, goalIndex);
-    const progress = addXP(5);
-    const newAchievements = checkAchievements();
+    completeGoal(req.user.id, filePath, depth, goalIndex);
+    const progress = addXP(req.user.id, 5);
+    const newAchievements = checkAchievements(req.user.id);
     res.json({ ...progress, xpGained: 5, newAchievements });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Validate a learner's written answer to a challenge (AI-graded)
-app.post('/api/goals/validate', async (req, res) => {
+// Validate a learner's answer (AI-graded)
+app.post('/api/goals/validate', requireAuth, async (req, res) => {
   try {
     const { code, challenge, answer, filePath, depth, goalIndex } = req.body;
     if (!challenge || !answer) return res.status(400).json({ error: 'challenge and answer required' });
-    const result = await validateGoalAnswer(code || '', challenge, answer);
+
+    const token = getAIToken(req);
+    const result = await validateGoalAnswer(code || '', challenge, answer, token);
     if (result.noAI) {
-      return res.json(result); // no XP — token is broken
+      return res.json(result);
     }
     if (result.pass) {
-      completeGoal(filePath, depth, goalIndex);
-      const progress = addXP(5);
-      const newAchievements = checkAchievements();
+      completeGoal(req.user.id, filePath, depth, goalIndex);
+      const progress = addXP(req.user.id, 5);
+      const newAchievements = checkAchievements(req.user.id);
       return res.json({ ...result, xpGained: 5, progress, newAchievements });
     }
     res.json(result);
@@ -308,9 +426,9 @@ app.post('/api/goals/validate', async (req, res) => {
 });
 
 // Get progress
-app.get('/api/progress', (req, res) => {
+app.get('/api/progress', requireAuth, (req, res) => {
   try {
-    const progress = getProgress();
+    const progress = getProgress(req.user.id);
     res.json(progress);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -318,16 +436,12 @@ app.get('/api/progress', (req, res) => {
 });
 
 // Mark completion and add XP
-app.post('/api/progress/complete', (req, res) => {
+app.post('/api/progress/complete', requireAuth, (req, res) => {
   try {
     const { filePath, depth, blockIndex, xpGained } = req.body;
-    
-    markComplete(filePath, depth, blockIndex || -1);
-    const progress = addXP(xpGained || 2);
-    
-    // Check achievements
-    const newAchievements = checkAchievements();
-    
+    markComplete(req.user.id, filePath, depth, blockIndex || -1);
+    const progress = addXP(req.user.id, xpGained || 2);
+    const newAchievements = checkAchievements(req.user.id);
     res.json({ ...progress, newAchievements });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -335,17 +449,17 @@ app.post('/api/progress/complete', (req, res) => {
 });
 
 // Record quiz score
-app.post('/api/progress/quiz', (req, res) => {
+app.post('/api/progress/quiz', requireAuth, (req, res) => {
   try {
     const { filePath, correct, total } = req.body;
-    recordQuizScore(filePath, correct, total);
+    recordQuizScore(req.user.id, filePath, correct, total);
     const percent = total > 0 ? (correct / total) * 100 : 0;
     const baseXP = correct * 10;
     const passBonus = percent >= 60 ? 25 : 0;
     const perfectBonus = percent === 100 ? 25 : 0;
     const xp = baseXP + passBonus + perfectBonus;
-    const progress = addXP(xp);
-    const newAchievements = checkAchievements();
+    const progress = addXP(req.user.id, xp);
+    const newAchievements = checkAchievements(req.user.id);
     res.json({ ...progress, newAchievements, xpGained: xp });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -353,17 +467,17 @@ app.post('/api/progress/quiz', (req, res) => {
 });
 
 // Get achievements
-app.get('/api/achievements', (req, res) => {
+app.get('/api/achievements', requireAuth, (req, res) => {
   try {
-    const unlocked = getAchievements();
+    const unlocked = getAchievements(req.user.id);
     const unlockedIds = new Set(unlocked.map(a => a.id));
-    
+
     const all = ACHIEVEMENT_DEFS.map(a => ({
       ...a,
       unlocked: unlockedIds.has(a.id),
       unlockedAt: unlocked.find(u => u.id === a.id)?.unlocked_at || null,
     }));
-    
+
     res.json({ achievements: all });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -371,65 +485,55 @@ app.get('/api/achievements', (req, res) => {
 });
 
 // Get daily challenge
-app.get('/api/daily-challenge', async (req, res) => {
+app.get('/api/daily-challenge', requireAuth, async (req, res) => {
   try {
-    if (!projectsCache) projectsCache = await scanProjects();
-    
-    // Pick a deterministic "random" file based on today's date
+    const userRepos = dbGetUserRepos(req.user.id);
+    if (userRepos.length === 0) {
+      return res.json({ challenge: null });
+    }
+
     const today = new Date().toISOString().split('T')[0];
     const seed = today.split('-').reduce((a, b) => a + parseInt(b), 0);
-    
-    // Collect all source files
+
+    // Collect files from user's repos via GitHub API
     const allFiles = [];
-    function collectFiles(tree, projectId) {
-      for (const node of tree) {
-        if (node.type === 'file' && node.lines > 5 && node.lines < 200) {
-          allFiles.push({ ...node, projectId });
+    for (const { owner, repo } of userRepos.slice(0, 5)) {
+      try {
+        const tree = await getRepoTree(owner, repo, req.user.access_token);
+        function collectFiles(nodes) {
+          for (const n of nodes) {
+            if (n.type === 'file' && n.lines > 5 && n.lines < 200) {
+              allFiles.push({ ...n, owner, repo });
+            }
+            if (n.children) collectFiles(n.children);
+          }
         }
-        if (node.children) collectFiles(node.children, projectId);
-      }
+        collectFiles(tree);
+      } catch { /* skip repos that fail */ }
     }
-    for (const p of projectsCache) {
-      collectFiles(p.fileTree, p.id);
-    }
-    
+
     if (allFiles.length === 0) {
       return res.json({ challenge: null });
     }
-    
+
     const file = allFiles[seed % allFiles.length];
-    const project = projectsCache.find(p => p.id === file.projectId);
-    
+
     res.json({
       challenge: {
         filePath: file.path,
         fileName: file.name,
         language: file.language,
         lines: file.lines,
-        projectId: file.projectId,
-        projectName: project?.name || file.projectId,
-        projectIcon: project?.icon || '📁',
-        projectDescription: project?.description || '',
+        owner: file.owner,
+        repo: file.repo,
+        projectName: `${file.owner}/${file.repo}`,
+        projectIcon: '📁',
+        projectDescription: '',
       }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// Rescan projects
-app.post('/api/scan', async (req, res) => {
-  try {
-    projectsCache = await scanProjects();
-    res.json({ success: true, projectCount: projectsCache.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// AI status
-app.get('/api/ai-status', (req, res) => {
-  res.json({ configured: isAIConfigured() });
 });
 
 // --- Achievement Definitions ---
@@ -446,44 +550,33 @@ const ACHIEVEMENT_DEFS = [
   { id: 'graduate', name: 'Graduate', icon: '🎓', description: 'Complete an entire project at all depths' },
 ];
 
-function checkAchievements() {
-  const stats = getCompletionStats();
-  const progress = getProgress();
+function checkAchievements(userId) {
+  const stats = getCompletionStats(userId);
+  const progress = getProgress(userId);
   const newlyUnlocked = [];
-  
-  // First Blood
+
   if (stats.totalExplanations >= 1) {
-    if (unlockAchievement('first-blood')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'first-blood'));
+    if (unlockAchievement(userId, 'first-blood')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'first-blood'));
   }
-  
-  // Bookworm
   if (stats.sessionExplanations >= 10) {
-    if (unlockAchievement('bookworm')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'bookworm'));
+    if (unlockAchievement(userId, 'bookworm')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'bookworm'));
   }
-  
-  // On Fire
   if (progress.streak_days >= 3) {
-    if (unlockAchievement('on-fire')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'on-fire'));
+    if (unlockAchievement(userId, 'on-fire')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'on-fire'));
   }
-  
-  // World Explorer
   if (stats.projectsVisited >= 8) {
-    if (unlockAchievement('world-explorer')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'world-explorer'));
+    if (unlockAchievement(userId, 'world-explorer')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'world-explorer'));
   }
-  
-  // Centurion
   if (stats.totalQuizCorrect >= 100) {
-    if (unlockAchievement('centurion')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'centurion'));
+    if (unlockAchievement(userId, 'centurion')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'centurion'));
   }
-  
-  // Speed Reader
   if (stats.sessionExplanations >= 5 && stats.sessionStart) {
     const elapsed = (Date.now() - new Date(stats.sessionStart).getTime()) / 60000;
     if (elapsed <= 10) {
-      if (unlockAchievement('speed-reader')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'speed-reader'));
+      if (unlockAchievement(userId, 'speed-reader')) newlyUnlocked.push(ACHIEVEMENT_DEFS.find(a => a.id === 'speed-reader'));
     }
   }
-  
+
   return newlyUnlocked;
 }
 
@@ -492,7 +585,7 @@ const distPath = join(__dirname, 'dist');
 if (existsSync(distPath)) {
   app.use(express.static(distPath));
   app.get('{*path}', (req, res) => {
-    if (!req.path.startsWith('/api/')) {
+    if (!req.path.startsWith('/api/') && !req.path.startsWith('/auth/')) {
       res.sendFile(join(distPath, 'index.html'));
     }
   });
@@ -501,5 +594,5 @@ if (existsSync(distPath)) {
 const PORT = process.env.PORT || process.env.CODEREADER_PORT || 3420;
 app.listen(PORT, () => {
   console.log(`\n  🧠 CodeReader running at http://localhost:${PORT}\n`);
-  console.log(`  AI: ${isAIConfigured() ? '✅ GitHub Models configured' : '⚠️  Set GITHUB_TOKEN in .env for AI explanations'}\n`);
+  console.log(`  Auth: GitHub OAuth ${process.env.GITHUB_CLIENT_ID ? '✅ configured' : '⚠️  GITHUB_CLIENT_ID not set'}\n`);
 });

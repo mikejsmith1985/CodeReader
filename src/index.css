@@ -126,3 +126,67 @@ button:active { transform: translateY(0); }
 .toast-xp {
   border-color: var(--accent);
 }
+
+/* Mobile Nav */
+.hamburger {
+  display: none;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 22px;
+  padding: 4px 8px;
+  cursor: pointer;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+}
+
+.hamburger:hover { background: var(--card); color: var(--text); transform: none; }
+
+.nav-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  z-index: 300;
+  transform: translateX(-100%);
+  transition: transform 0.25s ease;
+  display: flex;
+  flex-direction: column;
+}
+.nav-drawer.open { transform: translateX(0); }
+
+.nav-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 299;
+}
+
+.nav-stats { display: flex; align-items: center; gap: 12px; }
+
+@media (max-width: 768px) {
+  .hamburger { display: flex; }
+  .nav-stats { display: none; }
+
+  main {
+    padding: 16px !important;
+  }
+
+  nav {
+    padding: 10px 16px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  main {
+    padding: 12px !important;
+  }
+}
+

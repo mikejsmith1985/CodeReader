@@ -6,8 +6,13 @@ import { useProgress } from '../hooks/useProgress'
 export default function Quiz({ onProgress }) {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const filePath = searchParams.get('file')
-  const projectId = searchParams.get('project')
+
+  // New params: owner, repo, path
+  const owner = searchParams.get('owner')
+  const repo = searchParams.get('repo')
+  const pathParam = searchParams.get('path')
+  const filePath = owner && repo && pathParam ? `${owner}/${repo}/${pathParam}` : searchParams.get('file')
+
   const depth = parseInt(searchParams.get('depth')) || 3
   const blockIndex = parseInt(searchParams.get('block')) || 0
 

@@ -27,9 +27,9 @@ export function getToken() {
   return null;
 }
 
-async function chatCompletion(messages) {
-  const token = getToken();
-  if (!token) {
+async function chatCompletion(messages, token) {
+  const resolvedToken = token || getToken();
+  if (!resolvedToken) {
     console.log('AI: No token found. Set CODEREADER_GITHUB_TOKEN in .env or run "gh auth login".');
     return null;
   }
@@ -39,7 +39,7 @@ async function chatCompletion(messages) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${resolvedToken}`,
       },
       body: JSON.stringify({
         model: MODEL,
@@ -55,7 +55,7 @@ async function chatCompletion(messages) {
       if (response.status === 401) {
         console.error('Token rejected. GitHub Models needs a PAT with "models:read" scope.');
         console.error('Create one at: https://github.com/settings/tokens');
-        cachedToken = null; // Reset so we don't keep using a bad token
+        if (!token) cachedToken = null; // Only reset global cache if using global token
       }
       return null;
     }
@@ -285,7 +285,7 @@ function generateFallback(depth, filename, code) {
   return desc;
 }
 
-export async function getExplanation(filePath, code, depth, blockIndex, project, description) {
+export async function getExplanation(filePath, code, depth, blockIndex, project, description, token) {
   // Check cache first
   const cached = getCachedExplanation(filePath, depth, blockIndex);
   if (cached) return { explanation: cached.explanation, fromCache: true };
@@ -295,7 +295,7 @@ export async function getExplanation(filePath, code, depth, blockIndex, project,
   
   if (!messages) return { explanation: 'Invalid depth level.', fromCache: false };
   
-  const result = await chatCompletion(messages);
+  const result = await chatCompletion(messages, token);
   
   if (result) {
     cacheExplanation(filePath, depth, blockIndex, result);
@@ -305,13 +305,13 @@ export async function getExplanation(filePath, code, depth, blockIndex, project,
   return { explanation: generateFallback(depth, filename, code), fromCache: false, noAI: true };
 }
 
-export async function generateQuiz(filePath, code, explanation, depth, blockIndex) {
+export async function generateQuiz(filePath, code, explanation, depth, blockIndex, token) {
   // Check cache
   const cached = getCachedQuiz(filePath, depth, blockIndex);
   if (cached) return { questions: cached, fromCache: true };
   
-  const token = getToken();
-  if (!token) {
+  const resolvedToken = token || getToken();
+  if (!resolvedToken) {
     return { questions: generateFallbackQuiz(code), fromCache: false, noAI: true };
   }
   
@@ -344,7 +344,7 @@ Where "correct" is the 0-based index of the correct answer.` },
     { role: 'user', content: `Code:\n\`\`\`\n${code}\n\`\`\`\n\nExplanation the learner already read:\n${explanation}` },
   ];
   
-  const result = await chatCompletion(messages);
+  const result = await chatCompletion(messages, resolvedToken);
   
   if (result) {
     try {
@@ -420,15 +420,15 @@ function goalsCountForLines(lineCount) {
   return Math.min(6, Math.max(2, Math.ceil(lineCount / 50)));
 }
 
-export async function generateGoals(filePath, code, depth, filename, lineCount = 100) {
+export async function generateGoals(filePath, code, depth, filename, lineCount = 100, token) {
   const numGoals = goalsCountForLines(lineCount);
 
   const cached = getCachedGoals(filePath, depth);
   // Invalidate cache if it has fewer goals than we now need (file got bigger or ratio changed)
   if (cached && cached.length >= numGoals) return cached;
 
-  const token = getToken();
-  if (!token) return generateFallbackGoals(code, filename, numGoals);
+  const resolvedToken = token || getToken();
+  if (!resolvedToken) return generateFallbackGoals(code, filename, numGoals);
 
   const codePreview = code.slice(0, 4000);
   const messages = [
@@ -458,14 +458,16 @@ NEVER generate:
 Spread the challenges across DIFFERENT parts of the code so the learner has to read broadly, not just one section.
 Each challenge should take 1-3 minutes of real reading — not 5 seconds of scanning.
 
+IMPORTANT — each challenge MUST include a "codeExcerpt" field: copy the 1–4 most relevant lines from the code that the challenge refers to, exactly as written. This anchors the learner to exactly the right part of the code so they are not searching blind.
+
 Return ONLY valid JSON array with exactly ${numGoals} items:
-[{"challenge": "...", "hint": "...", "emoji": "🎯"}, ...]
+[{"challenge": "...", "codeExcerpt": "...", "hint": "...", "emoji": "🎯"}, ...]
 
 Use different emojis: 🎯 🔬 🧠 💡 🔄 ⚡ 🌊 🗝️ 🏗️ 🎭` },
     { role: 'user', content: `Filename: ${filename}\nDepth level: ${depth} (${depth <= 2 ? 'big-picture overview' : 'mechanics / how it works'})\nFile length: ${lineCount} lines\n\nCode:\n\`\`\`\n${codePreview}\n\`\`\`` },
   ];
 
-  const result = await chatCompletion(messages);
+  const result = await chatCompletion(messages, resolvedToken);
   if (result) {
     try {
       let jsonStr = result;
@@ -512,9 +514,9 @@ function generateFallbackGoals(code, filename, numGoals = 3) {
   return pool.slice(0, numGoals);
 }
 
-export async function validateGoalAnswer(code, challenge, answer) {
-  const token = getToken();
-  if (!token) {
+export async function validateGoalAnswer(code, challenge, answer, token) {
+  const resolvedToken = token || getToken();
+  if (!resolvedToken) {
     return {
       pass: false,
       noAI: true,
@@ -537,7 +539,7 @@ Be lenient. Plain English understanding counts. Perfect technical terms are NOT 
   ];
 
   try {
-    const result = await chatCompletion(messages);
+    const result = await chatCompletion(messages, resolvedToken);
     if (result) {
       const jsonMatch = result.match(/\{[\s\S]*\}/);
       if (jsonMatch) {

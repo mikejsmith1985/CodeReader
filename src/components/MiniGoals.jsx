@@ -71,6 +71,26 @@ function Challenge({ goal, index, filePath, code, depth, completed, onPass }) {
         {isDone && <span style={{ fontSize: 18, flexShrink: 0, marginLeft: 'auto' }}>✅</span>}
       </div>
 
+      {/* Code excerpt anchor */}
+      {goal.codeExcerpt && !isDone && (
+        <pre style={{
+          margin: '0 0 8px 30px',
+          padding: '8px 12px',
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          fontSize: 12,
+          lineHeight: 1.6,
+          overflowX: 'auto',
+          color: 'var(--text-secondary)',
+          fontFamily: 'monospace',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all',
+        }}>
+          {goal.codeExcerpt}
+        </pre>
+      )}
+
       {/* Hint */}
       {!isDone && !isNoAI && (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginLeft: 30, marginBottom: 10 }}>

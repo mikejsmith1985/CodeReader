@@ -30,8 +30,6 @@ primary_region = "iad"
   PORT = "3000"
   # SQLite database lives on the persistent volume
   DATA_DIR = "/data"
-  # Cloned repos also live on the persistent volume (survives restarts)
-  PROJECTS_DIR = "/data/projects"
 
 # Set secrets via: fly secrets set CODEREADER_GITHUB_TOKEN=xxx
 # Optionally: fly secrets set GITHUB_CLONE_TOKEN=xxx  (only needed for private repos)
