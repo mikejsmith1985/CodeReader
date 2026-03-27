@@ -315,31 +315,53 @@ export async function generateQuiz(filePath, code, explanation, depth, blockInde
     return { questions: generateFallbackQuiz(code), fromCache: false, noAI: true };
   }
   
+  const depthGuide = {
+    1: `DEPTH: Bird's Eye View (Depth 1)
+The learner just got a high-level overview of what this FILE does. They have NOT studied specific code yet.
+Questions MUST be purely conceptual — about the file's purpose, role in the app, and why it exists.
+- DO ask: What is the main job of this file? What problem does it solve? What would break if it didn't exist?
+- DO NOT ask about any specific function, variable, hook, or line of code
+- DO NOT show a codeExcerpt — set "codeExcerpt": "" for all questions
+- All 3 questions should be answerable by someone who only read a one-paragraph summary of the file`,
+
+    2: `DEPTH: How It Works (Depth 2)
+The learner understands the file's purpose and has seen the major building blocks.
+Questions should be about the main patterns and how major pieces connect — not line-by-line details.
+- DO ask about major functions/components and what role they play
+- DO NOT ask about specific implementation details, algorithm steps, or exact values
+- codeExcerpt should show only a function signature or component name, not internal logic`,
+
+    3: `DEPTH: Deep Dive (Depth 3)
+The learner is studying a specific code block in detail.
+Questions CAN reference specific logic, conditions, and how this block interacts with the rest.
+- Ask about cause-and-effect: what happens when X runs, why this approach was chosen
+- codeExcerpt should show the most relevant 1-4 lines being asked about`,
+
+    4: `DEPTH: Boss Level (Depth 4)
+The learner is tackling advanced understanding.
+Questions should probe design decisions, trade-offs, edge cases, and deeper "why" thinking.
+- Challenge the learner with scenarios: "what would go wrong if...", "why not use X instead?"
+- codeExcerpt should illustrate the specific tension or trade-off being asked about`,
+  };
+
   const messages = [
     { role: 'system', content: `Generate exactly 3 multiple-choice questions to test comprehension of the following code.
 
-FOCUS ONLY on:
-- What this code DOES in the real application (its purpose and effect on the user)
-- WHY certain patterns or approaches were chosen (design reasoning)
-- What WOULD HAPPEN if something changed (cause and effect thinking)
-- Concepts explained in the explanation the learner already read
+${depthGuide[depth] || depthGuide[3]}
 
 NEVER ask about:
-- Specific literal values: hex color codes, magic numbers, pixel values, URLs, string constants. NEVER ask "what is the value of X" or "what color does #1a1a2e produce" — these test memorization of trivia, not understanding.
-- Counting lines, blank lines, characters, imports, or anything numerical
-- Memorizing exact line numbers or syntax details
-- Punctuation, semicolons, brackets, or formatting
-- Things not clearly explained in the explanation provided
+- Specific literal values: hex color codes, magic numbers, pixel values, URLs, string constants
 - Any question whose correct answer is a raw value copied from the code (like "#1a1a2e", "42", "localhost:3000")
+- Counting lines, blank lines, characters, imports, or anything numerical
+- Memorizing exact syntax, punctuation, semicolons, or formatting
+- Anything not clearly covered by the explanation the learner already read
 
-If the code block is mostly variable/constant declarations (like CSS custom properties or config objects), ask about the PURPOSE of those variables — why they exist, what happens if you change them, why this pattern is used — not what their specific values are.
-
-Questions must be answerable by someone who understood the explanation — no memorization of raw values needed.
+Questions must be fully answerable by someone who read and understood the explanation — no memorization, no googling.
 
 IMPORTANT — question wording rules:
-- Each question MUST include the exact variable name, function name, or keyword from the code that it is asking about (e.g. use "state variable 'constraints'" not just "the variable", use "useState" not just "the hook")
-- Each question MUST have a "codeExcerpt" field: copy the 1–4 most relevant lines from the code that the question refers to, exactly as written. This anchors the learner to the right part of the code.
-- Make each question fully self-contained — the learner should be able to read the question + excerpt and know exactly what is being asked without hunting through the full file.
+- Name the exact variable, function, or component being asked about — never say "the variable" or "the function"
+- Make each question fully self-contained with its excerpt
+- At depth 1, codeExcerpt MUST be empty string ""
 
 Return ONLY a valid JSON array, no markdown, no text outside the JSON:
 [{"question": "...", "codeExcerpt": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": 0, "hint": "..."}]
