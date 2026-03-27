@@ -26,12 +26,27 @@ export default function Quiz({ onProgress }) {
 
   useEffect(() => {
     if (!filePath) return
-    const code = searchParams.get('code') || ''
+
+    // Retrieve code + explanation stored by CodeExplorer before navigating here
+    let code = ''
+    let explanation = ''
+    try {
+      const ctx = sessionStorage.getItem('quiz_context')
+      if (ctx) {
+        const parsed = JSON.parse(ctx)
+        code = parsed.code || ''
+        explanation = parsed.explanation || ''
+        sessionStorage.removeItem('quiz_context') // consume once
+      }
+    } catch (e) { /* ignore */ }
+
+    // Fallback: code from URL param (legacy)
+    if (!code) code = searchParams.get('code') || ''
 
     fetch('/api/quiz', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath, code, explanation: '', depth, blockIndex }),
+      body: JSON.stringify({ filePath, code, explanation, depth, blockIndex }),
     })
       .then(r => r.json())
       .then(data => {

@@ -97,8 +97,13 @@ export default function CodeExplorer({ onProgress }) {
   }
 
   const handleQuizMe = () => {
-    const code = depth <= 2 ? fileData.content?.slice(0, 2000) : fileData.blocks?.[blockIndex]?.code
-    navigate(`/quiz?owner=${owner}&repo=${repo}&path=${encodeURIComponent(pathParam)}&depth=${depth}&block=${blockIndex}&code=${encodeURIComponent(code?.slice(0, 2000) || '')}`)
+    const code = depth <= 2 ? fileData.content : fileData.blocks?.[blockIndex]?.code
+    // Store full code + explanation in sessionStorage to avoid URL length limits
+    sessionStorage.setItem('quiz_context', JSON.stringify({
+      code: code || '',
+      explanation: ai.explanation || '',
+    }))
+    navigate(`/quiz?owner=${owner}&repo=${repo}&path=${encodeURIComponent(pathParam)}&depth=${depth}&block=${blockIndex}`)
   }
 
   const handleGoDeeper = () => {

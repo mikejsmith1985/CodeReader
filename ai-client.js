@@ -325,12 +325,16 @@ FOCUS ONLY on:
 - Concepts explained in the explanation the learner already read
 
 NEVER ask about:
+- Specific literal values: hex color codes, magic numbers, pixel values, URLs, string constants. NEVER ask "what is the value of X" or "what color does #1a1a2e produce" — these test memorization of trivia, not understanding.
 - Counting lines, blank lines, characters, imports, or anything numerical
 - Memorizing exact line numbers or syntax details
 - Punctuation, semicolons, brackets, or formatting
 - Things not clearly explained in the explanation provided
+- Any question whose correct answer is a raw value copied from the code (like "#1a1a2e", "42", "localhost:3000")
 
-Questions must be answerable by someone who understood the explanation — no extra googling needed.
+If the code block is mostly variable/constant declarations (like CSS custom properties or config objects), ask about the PURPOSE of those variables — why they exist, what happens if you change them, why this pattern is used — not what their specific values are.
+
+Questions must be answerable by someone who understood the explanation — no memorization of raw values needed.
 
 IMPORTANT — question wording rules:
 - Each question MUST include the exact variable name, function name, or keyword from the code that it is asking about (e.g. use "state variable 'constraints'" not just "the variable", use "useState" not just "the hook")
@@ -341,7 +345,7 @@ Return ONLY a valid JSON array, no markdown, no text outside the JSON:
 [{"question": "...", "codeExcerpt": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": 0, "hint": "..."}]
 
 Where "correct" is the 0-based index of the correct answer.` },
-    { role: 'user', content: `Code:\n\`\`\`\n${code}\n\`\`\`\n\nExplanation the learner already read:\n${explanation}` },
+    { role: 'user', content: `Code:\n\`\`\`\n${code}\n\`\`\`\n\nExplanation the learner already read:\n${explanation || '(No explanation available — focus on what the code does conceptually.)'}` },
   ];
   
   const result = await chatCompletion(messages, resolvedToken);

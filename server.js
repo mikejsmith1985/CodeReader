@@ -16,7 +16,7 @@ import {
   getAchievements, unlockAchievement, visitProject,
   getVisitedProjects, getCompletionStats, getCompletionsForProject,
   completeGoal, getCompletedGoals, getSetting, setSetting,
-  SQLiteStore,
+  getCachedExplanation, SQLiteStore,
 } from './db.js';
 import { getUserRepos, searchRepos, getRepoInfo, getRepoTree, getFileContent as ghGetFileContent } from './github-client.js';
 
@@ -365,8 +365,11 @@ app.post('/api/quiz', requireAuth, async (req, res) => {
     const { filePath, code, explanation, depth, blockIndex } = req.body;
     if (!code) return res.status(400).json({ error: 'code required' });
 
+    // If no explanation provided, look it up from cache (Quiz page doesn't have it in state)
+    const resolvedExplanation = explanation || getCachedExplanation(filePath || '', depth || 3, blockIndex ?? -1) || '';
+
     const token = getAIToken(req);
-    const result = await generateQuiz(filePath || '', code, explanation || '', depth || 3, blockIndex || -1, token);
+    const result = await generateQuiz(filePath || '', code, resolvedExplanation, depth || 3, blockIndex ?? -1, token);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
