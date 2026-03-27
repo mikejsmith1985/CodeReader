@@ -1,5 +1,4 @@
 node_modules
-dist
 codereader.db
 codereader.db-shm
 codereader.db-wal
